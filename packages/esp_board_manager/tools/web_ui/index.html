@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ESP Board Manager 可视化配置</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f5f7fb; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+    .card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    textarea, select, input, button { width: 100%; box-sizing: border-box; border: 1px solid #d5d8de; border-radius: 6px; padding: 8px; }
+    textarea { min-height: 220px; font-family: Consolas, monospace; }
+    .row { display: flex; gap: 10px; }
+    .row > * { flex: 1; }
+    .actions { display: flex; gap: 8px; }
+    button { cursor: pointer; background: #0d6efd; color: #fff; border: none; }
+    button.secondary { background: #6c757d; }
+    #status { white-space: pre-wrap; font-size: 13px; color: #0f5132; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ESP Board Manager 可视化网页界面</h1>
+
+    <div class="card">
+      <label>加载模板板子</label>
+      <select id="boardSelect"></select>
+      <div style="font-size:12px;color:#666;margin-top:6px;">可加载 board_manager 内置板子的 YAML 作为起点，并按需求改成你的设备/外设配置。</div>
+    </div>
+
+    <div class="card">
+      <label>board_info.yaml</label>
+      <textarea id="boardInfo"></textarea>
+    </div>
+
+    <div class="card">
+      <label>board_peripherals.yaml（外设配置）</label>
+      <textarea id="boardPeripherals"></textarea>
+    </div>
+
+    <div class="card">
+      <label>board_devices.yaml（设备配置）</label>
+      <textarea id="boardDevices"></textarea>
+    </div>
+
+    <div class="card">
+      <div class="actions">
+        <button id="downloadBtn">下载 YAML 压缩包</button>
+        <button id="saveBtn" class="secondary">保存到本地目录</button>
+      </div>
+      <div style="margin-top:10px;">
+        <label>保存目录（服务器本机路径）</label>
+        <input id="outputDir" placeholder="例如 /tmp/my_board" />
+      </div>
+      <div id="status"></div>
+    </div>
+  </div>
+
+  <script>
+    const boardSelect = document.getElementById('boardSelect');
+    const boardInfo = document.getElementById('boardInfo');
+    const boardPeripherals = document.getElementById('boardPeripherals');
+    const boardDevices = document.getElementById('boardDevices');
+    const statusBox = document.getElementById('status');
+
+    async function loadBoards() {
+      const res = await fetch('/api/boards');
+      const data = await res.json();
+      boardSelect.innerHTML = '<option value="">-- 请选择 --</option>' + data.boards.map(b => `<option value="${b}">${b}</option>`).join('');
+    }
+
+    function model() {
+      return {
+        board_info: boardInfo.value,
+        board_peripherals: boardPeripherals.value,
+        board_devices: boardDevices.value,
+      };
+    }
+
+    boardSelect.addEventListener('change', async () => {
+      const name = boardSelect.value;
+      if (!name) return;
+      const res = await fetch(`/api/board/${name}`);
+      const data = await res.json();
+      boardInfo.value = data.board_info || '';
+      boardPeripherals.value = data.peripherals || '';
+      boardDevices.value = data.devices || '';
+      statusBox.textContent = `已加载模板: ${name}`;
+    });
+
+    document.getElementById('downloadBtn').addEventListener('click', () => {
+      const q = encodeURIComponent(JSON.stringify(model()));
+      window.location.href = `/api/export?payload=${q}`;
+      statusBox.textContent = '开始下载 YAML 压缩包';
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      const outputDir = document.getElementById('outputDir').value.trim();
+      const res = await fetch('/api/save', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ output_dir: outputDir, model: model() }),
+      });
+      const data = await res.json();
+      statusBox.textContent = res.ok ? `保存成功: ${data.saved_to}` : `保存失败: ${data.error}`;
+    });
+
+    loadBoards();
+  </script>
+</body>
+</html>

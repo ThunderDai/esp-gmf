@@ -188,6 +188,22 @@ For later board changes, you only need to clear the current board configuration 
 
 > **Note:** The prebuild script takes over steps related to [Add and Activate Component](#1-add-and-activate-component) and [Scan Boards and Select Board](#2-scan-boards-and-select-board).
 
+### 3.1 Visual web configurator (experimental)
+
+If you prefer a visual workflow to edit board settings, use `tools/board_manager_web_ui.py` to run a local web UI. The UI supports:
+
+- Loading board templates from `boards/`
+- Editing device/peripheral configuration with structured JSON
+- Exporting `board_info.yaml`, `board_devices.yaml`, and `board_peripherals.yaml`
+- Saving generated files directly to a local path for immediate usage
+
+```bash
+cd esp_board_manager
+python tools/board_manager_web_ui.py --host 0.0.0.0 --port 8765
+```
+
+Open `http://localhost:8765` in your browser.
+
 ### 4. Use in Your Application
 
 ```c

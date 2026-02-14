@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""Simple web UI for creating and exporting esp_board_manager YAML configs."""
+
+from __future__ import annotations
+
+import argparse
+import io
+import json
+import re
+import sys
+import zipfile
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+ROOT = Path(__file__).resolve().parent.parent
+BOARDS_DIR = ROOT / "boards"
+STATIC_INDEX = Path(__file__).resolve().parent / "web_ui" / "index.html"
+
+
+class BoardRepository:
+    def __init__(self, boards_dir: Path):
+        self.boards_dir = boards_dir
+
+    def list_boards(self) -> list[str]:
+        return [
+            path.name
+            for path in sorted(self.boards_dir.iterdir())
+            if path.is_dir() and (path / "board_info.yaml").exists()
+        ]
+
+    def _read_text(self, path: Path) -> str:
+        return path.read_text(encoding="utf-8") if path.exists() else ""
+
+    def load_board(self, board_name: str) -> dict:
+        board_path = self.boards_dir / board_name
+        if not board_path.exists():
+            raise FileNotFoundError(board_name)
+        return {
+            "board": board_name,
+            "board_info": self._read_text(board_path / "board_info.yaml"),
+            "devices": self._read_text(board_path / "board_devices.yaml"),
+            "peripherals": self._read_text(board_path / "board_peripherals.yaml"),
+        }
+
+
+def _extract_board_name(board_info_text: str) -> str:
+    match = re.search(r"^board:\s*(\S+)\s*$", board_info_text, flags=re.MULTILINE)
+    return match.group(1) if match else "custom_board"
+
+
+class BoardUIHandler(BaseHTTPRequestHandler):
+    repo = BoardRepository(BOARDS_DIR)
+
+    def _json(self, payload: dict, status: int = 200) -> None:
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_index(self) -> None:
+        body = STATIC_INDEX.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length)
+        return json.loads(raw.decode("utf-8")) if raw else {}
+
+    def do_GET(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path in {"/", "/index.html"}:
+            self._serve_index()
+            return
+        if parsed.path == "/api/boards":
+            self._json({"boards": self.repo.list_boards()})
+            return
+        if parsed.path.startswith("/api/board/"):
+            board_name = parsed.path.split("/", 3)[-1]
+            try:
+                data = self.repo.load_board(board_name)
+            except FileNotFoundError:
+                self._json({"error": f"Board not found: {board_name}"}, status=404)
+                return
+            self._json(data)
+            return
+        if parsed.path == "/api/export":
+            query = parse_qs(parsed.query)
+            payload = query.get("payload", [None])[0]
+            if not payload:
+                self._json({"error": "missing payload"}, status=400)
+                return
+            try:
+                model = json.loads(payload)
+            except json.JSONDecodeError as err:
+                self._json({"error": str(err)}, status=400)
+                return
+            self._export_zip(model)
+            return
+        self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/api/save":
+            data = self._read_json()
+            out_dir = data.get("output_dir")
+            model = data.get("model")
+            if not out_dir or not isinstance(model, dict):
+                self._json({"error": "output_dir and model are required"}, status=400)
+                return
+            output = Path(out_dir).expanduser().resolve()
+            output.mkdir(parents=True, exist_ok=True)
+            self._write_outputs(model, output)
+            self._json({"saved_to": str(output)})
+            return
+        self.send_error(HTTPStatus.NOT_FOUND, "Not Found")
+
+    def _model_to_yaml_files(self, model: dict) -> dict[str, str]:
+        board_info = model.get("board_info", "")
+        board_name = _extract_board_name(board_info)
+        return {
+            "board_info.yaml": board_info,
+            "board_peripherals.yaml": model.get("board_peripherals", ""),
+            "board_devices.yaml": model.get("board_devices", ""),
+            f"README_{board_name}.txt": "Generated by board_manager_web_ui.py\n",
+        }
+
+    def _write_outputs(self, model: dict, output: Path) -> None:
+        for name, content in self._model_to_yaml_files(model).items():
+            (output / name).write_text(content, encoding="utf-8")
+
+    def _export_zip(self, model: dict) -> None:
+        data = io.BytesIO()
+        with zipfile.ZipFile(data, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for name, content in self._model_to_yaml_files(model).items():
+                zf.writestr(name, content)
+        payload = data.getvalue()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/zip")
+        self.send_header("Content-Disposition", 'attachment; filename="board_configs.zip"')
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt: str, *args) -> None:
+        sys.stdout.write(f"[board-ui] {self.address_string()} - {fmt % args}\n")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="ESP Board Manager Web UI")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", default=8765, type=int)
+    args = parser.parse_args()
+    server = ThreadingHTTPServer((args.host, args.port), BoardUIHandler)
+    print(f"Board UI server running on http://{args.host}:{args.port}")
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()
