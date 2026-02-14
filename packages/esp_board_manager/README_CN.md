@@ -188,6 +188,22 @@ source prebuild.sh
 
 > **注意:** 预编译脚本接管了上述的[添加并激活组件](#1-添加并激活组件)和[扫描并选择板子](#2-扫描并选择板子)中的步骤。
 
+### 3.1 使用可视化网页配置工具（实验特性）
+
+如果需要以图形化方式编辑板子配置，可使用 `tools/board_manager_web_ui.py` 启动本地网页服务。网页支持：
+
+- 加载 `boards/` 中已有模板板子
+- 可视化编辑设备与外设配置（JSON 结构）
+- 导出 `board_info.yaml`、`board_devices.yaml`、`board_peripherals.yaml`
+- 直接保存到本机指定目录，便于后续用于 `esp_board_manager`
+
+```bash
+cd esp_board_manager
+python tools/board_manager_web_ui.py --host 0.0.0.0 --port 8765
+```
+
+浏览器打开 `http://localhost:8765` 即可使用。
+
 ### 4. 在您的应用程序中使用
 
 ```c
